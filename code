@@ -1,0 +1,95 @@
+import os
+import pandas as pd
+import numpy as np
+from sklearn.linear_model import LinearRegression
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import cross_val_score
+
+# 1) PATHS
+base_dir   = os.path.join("/kaggle", "input", "app-rating-competition")
+train_path = os.path.join(base_dir, "train.csv")
+test_path  = os.path.join(base_dir, "test.csv")  
+subm_path  = os.path.join(base_dir, "SampleSubmission.csv")
+out_path   = os.path.join("/kaggle", "working", "submission.csv")
+
+# 2) LOAD
+train_df   = pd.read_csv(train_path)
+test_df    = pd.read_csv(test_path)
+submission = pd.read_csv(subm_path)
+
+# 3) RENAME COLUMNS
+train_df.columns = ["X0","X1","X2","X3","X4","X5","X6","X7","X8","X9","X10","X11","Y"]
+test_df.columns  = train_df.columns[:-1]
+
+# 4) CLEANING HELPERS
+def clean_size(s):
+    if pd.isna(s) or "Varies" in str(s):
+        return np.nan
+    s = str(s).strip().upper()
+    if s.endswith("M"): return float(s[:-1])
+    if s.endswith("K"): return float(s[:-1]) / 1024
+    try: return float(s)
+    except: return np.nan
+
+def clean_price(p):
+    if str(p).strip().lower() == "free":
+        return 0.0
+    p = str(p).replace("$","").replace(",","")
+    try: return float(p)
+    except: return np.nan
+
+# 5) FEATURE ENGINEERING
+def fe(df):
+    # Size
+    df["SizeMB"]      = df["X3"].apply(clean_size)
+    df["LogSize"]     = np.log1p(df["SizeMB"].fillna(0).clip(lower=0))  # Ensure no negative values
+    # Installs
+    inst = (df["X4"]
+            .str.replace(r"[+,]", "", regex=True)
+            .pipe(pd.to_numeric, errors="coerce"))
+    df["LogInstalls"] = np.log1p(inst.clip(lower=0).fillna(0))  # Ensure no negative values
+    # Price
+    df["PriceClean"]  = df["X6"].apply(clean_price)
+    df["LogPrice"]    = np.log1p(df["PriceClean"].clip(lower=0).fillna(0))  # Ensure no negative values
+    # Interactions
+    df["SizePerInstall"]  = df["SizeMB"] / (inst + 1)
+    df["PricePerInstall"] = df["PriceClean"] / (inst + 1)
+    return df
+
+train_df = fe(train_df)
+test_df  = fe(test_df)
+
+# 6) DEFINE FEATURES + DROP ROWS WITH MISSING
+FEATURES = ["LogSize", "LogInstalls", "LogPrice", "SizePerInstall", "PricePerInstall"]
+
+# Drop any train rows with NaNs in FEATURES or target Y
+train_df = train_df.dropna(subset=FEATURES + ["Y"])
+
+X_train = train_df[FEATURES]
+y_train = train_df["Y"]
+X_test  = test_df[FEATURES]
+
+# 7) Handle missing values in X_test
+X_test = X_test.fillna(0)  # You can also use median or mode imputation depending on your choice
+
+# 8) SCALE
+scaler = StandardScaler()
+X_train_scaled = scaler.fit_transform(X_train)
+X_test_scaled  = scaler.transform(X_test)
+
+# 9) TRAIN
+model = LinearRegression()
+model.fit(X_train_scaled, y_train)
+
+# Optional CV
+cv_scores = cross_val_score(
+    model, X_train_scaled, y_train,
+    cv=5, scoring="neg_root_mean_squared_error"
+)
+print("CV RMSE:", (-cv_scores).mean()**0.5)
+
+# 10) PREDICT & SUBMIT
+preds = model.predict(X_test_scaled)
+submission["Y"] = preds
+submission.to_csv(out_path, index=False)
+print(f"✅ submission.csv saved at {out_path}")
